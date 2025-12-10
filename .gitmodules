@@ -1,0 +1,3 @@
+[submodule "trajectory_utils"]
+	path = trajectory_utils
+	url = git@github.com:StuartGJohnson/trajectory_utils.git

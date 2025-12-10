@@ -1,0 +1,18 @@
+# ControlTrajectoryScenarioMsg.action
+
+# Goal
+float64[3] s0
+float64[2] u_goal
+float64[2] u_final
+float64[2] u_min
+float64 t
+int32 n
+bool dryrun
+---
+# Result
+bool success
+string message
+---
+# Feedback
+float32 progress
+string  status
