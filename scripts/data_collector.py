@@ -36,6 +36,7 @@ from torch_traj_utils.scalar_field_interpolator import OccupancyMap
 from torch_traj_utils.diff_drive_solver import SolverParams
 from control_trajectory_planner import ControlTrajectoryScenario, ControlTrajectoryPlanner, RobotEnvParams, ControlTrajectory
 from trajectory_data_collector.action import ControlTrajectoryScenarioMsg
+from follow_path_monitor import FollowPathMonitor
 import threading
 import time
 from typing import Tuple
@@ -153,9 +154,10 @@ class DataCollector(Node):
             FollowPath,
             "follow_path",
         )
+        #self.follow_path_monitor_ = FollowPathMonitor(self, latched_qos)
         self.ep_ = RobotEnvParams(
-            robot_radius=0.14,
-            obstacle_radius=0.14,
+            robot_radius=0.2,
+            obstacle_radius=0.2,
             max_robot_v=0.3,
             max_robot_omega=1.0,
             occupied_thresh=50)
@@ -264,39 +266,54 @@ class DataCollector(Node):
         # save the trajectory diagnostic plot
         #self.trajectory_planner_.do_diagnostic_plot("/home/sjohnson/ugv_ws/ctp_diag.png", ct)
 
+        # none of the nav2 handshaking is working, but some bits of code are
+        # left in place for future cleanup (or my own follow-path node)
+        nav2_success = True
         if not dryrun:
+            # reset monitor
+            # self.follow_path_monitor_.set_unknown()
             # hand off path to nav2 for following
             # note: we may want to use the async version here
-            nav2_result = self.follow_path_client_.send_goal(path)
+            nav2_goal = FollowPath.Goal()
+            nav2_goal.path = path
+            nav2_goal.controller_id = "FollowPath"
+            nav2_goal.goal_checker_id = "general_goal_checker"
+            nav2_goal_future = self.follow_path_client_.send_goal_async(nav2_goal)
 
-        # might be useful - from a gpt5 idea dump
-        # # --- Long feasibility check and execution loop ---
-        # # Example: pretend feasibility checking + execution take time
-        # for i in range(1, 11):
-        #     # Check for cancel
-        #     if goal_handle.is_cancel_requested:
-        #         self.get_logger().info(f'Goal {goal.u_goal} canceled')
-        #         goal_handle.canceled()
-        #
-        #         result = ControlTrajectoryScenarioMsg.Result()
-        #         result.success = False
-        #         result.message = 'Goal was canceled by client'
-        #         return result
-        #
-        #     # Simulate work chunk
-        #     time.sleep(0.5)
-        #
-        #     feedback_msg.progress = i / 10.0
-        #     feedback_msg.status = f'Working on {goal.task_id}, step {i}/10'
-        #     goal_handle.publish_feedback(feedback_msg)
-        #     self.get_logger().debug(feedback_msg.status)
+            # none of this nav2 goal synch/status check stuff works - presumably
+            # nav2 either has a bug, or the nav2 behavior tree is doing what
+            # we want in a different way
 
-        # If we are here, success!
+            # let nav2 swallow before checking status
+            #time.sleep(2.0)
+
+            # while self.follow_path_monitor_.is_busy:
+            #     time.sleep(1.0)
+
+            # while not nav2_goal_future.done():
+            #     time.sleep(1.0)
+            #
+            # nav2_goal_handle = nav2_goal_future.result()
+            # if not nav2_goal_handle.accepted:
+            #     self.get_logger().info(f'Goal {gug} not accepted by nav2.')
+            #     nav2_success = False
+            # else:
+            #     nav2_result_future = nav2_goal_handle.get_result_async()
+            #     while not nav2_result_future.done():
+            #         time.sleep(1.0)
+
+        # If we are here, "success"!
         goal_handle.succeed()
         result = ControlTrajectoryScenarioMsg.Result()
-        result.success = True
-        result.message = 'Trajectory planning and nav2 complete trajectory.'
-        self.get_logger().info(f'Goal {gug} succeeded')
+        if nav2_success:
+            result.success = True
+            result.message = 'Trajectory planning completed and nav2 trajectory started (probably).'
+            self.get_logger().info(f'Goal {gug} succeeded')
+        else:
+            # not yet supported, since I can't seem to get any feedback from nav2
+            result.success = False
+            result.message = 'An error occurred in nav2.'
+            self.get_logger().info(f'Goal {gug} succeeded')
         self.busy_ = False
         return result
 
