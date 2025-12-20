@@ -64,7 +64,7 @@ class ControlTrajectoryPlanner:
         N = t.size - 1
         self.solver.reset_custom(sc.s0, sc.u_goal, sc.u_final, sc.u_min, N, sdf=self.sdf)
         self.solver.initialize_trajectory()
-        s, u, J, conv, status = self.solver.solve()
+        s, u, J, conv, status, _, _ = self.solver.solve()
         # update with a rollout
         s,u = self.solver.rollout(s, u)
         return ControlTrajectory(sc=sc,

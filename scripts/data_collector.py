@@ -173,7 +173,9 @@ class DataCollector(Node):
             cvxpy_eps=.001,
             max_iters=10000,
             u_max=u_max,
-            s_max=np.array([]))
+            s_max=np.array([]),
+            max_solve_secs=-1.0
+        )
         self.trajectory_planner_ = \
             ControlTrajectoryPlanner(solver_params=self.sp_, env_params=self.ep_)
 
