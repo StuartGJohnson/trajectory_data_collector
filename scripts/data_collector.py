@@ -23,11 +23,14 @@ from rclpy.qos import (
     QoSHistoryPolicy,
 )
 from rclpy.node import Node
+from rclpy.time import Time
+from rclpy.duration import Duration
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import FollowPath
-from geometry_msgs.msg import PoseStamped, Point, Quaternion
+from geometry_msgs.msg import PoseStamped, Point, Quaternion, Twist
+from std_msgs.msg import Bool
 from rclpy.subscription import Subscription
 import logging
 import numpy as np
@@ -42,6 +45,8 @@ import time
 from typing import Tuple
 from builtin_interfaces.msg import Time
 import uuid
+from bag_recorder import BagRecorder, qos_state, qos_sensor, qos_latched
+import os
 
 def uuid_to_string(uuid_msg) -> str:
     return str(uuid.UUID(bytes=bytes(uuid_msg.uuid)))
@@ -118,6 +123,34 @@ latched_qos = QoSProfile(
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
 )
 
+collection_topics = [
+    "/cmd_vel",
+    "/odom",
+    "/tf",
+    "/tf_static",
+    "/joint_states",
+    "/gt_pose"
+]
+
+per_topic_qos = {
+    "/tf_static": qos_latched(depth=1),   # important: late-joiners get the static transforms
+    "/tf": qos_state(depth=200),          # tf is bursty; deeper queue helps
+    "/odom": qos_state(depth=50),
+    "/ground_truth": qos_state(depth=50),
+    "/joint_states": qos_state(depth=50),
+    "/gt_pose": qos_state(depth=50),
+
+    # Sensors often publish BEST_EFFORT; match that to avoid incompatibility
+    "/imu/data": qos_sensor(depth=200),
+    "/imu/mag": qos_sensor(depth=200),
+
+    # Depending on your publisher, this might be BEST_EFFORT; start sensor-ish
+    "/lidar_odom": qos_sensor(depth=100),
+
+    # cmd_vel is Twist (no header) and can be best-effort; start sensor-ish
+    "/cmd_vel": qos_sensor(depth=50),
+}
+
 class DataCollector(Node):
     busy_: bool
     request_map_update_: bool
@@ -128,19 +161,32 @@ class DataCollector(Node):
     occ_map_thresh_: float
     action_server_: ActionServer
     trajectory_planner_: ControlTrajectoryPlanner
+    ct_: ControlTrajectory | None
     ep_: RobotEnvParams
     sp_: SolverParams
+    path_: Path | None
+    path_available_: bool
+    last_cmd_vel_time_: Time | None
+    nav2_timeout_: Duration
+    data_recorder_: BagRecorder
 
     def __init__(self):
         super().__init__('DataCollector')
         self.occ_map_ = None
+        self.ct_ = None
         self.pose_ = None
         self.request_map_update_ = False
         self.request_pose_update_ = False
         self.busy_ = False
-        self.map_callback_ = self.create_subscription(OccupancyGrid, '/map', self.map_callback, latched_qos)
+        self.path_ = None
+        self.path_available_ = False
+        self.map_callback_ = self.create_subscription(OccupancyGrid, '/octomap_grid', self.map_callback, latched_qos)
         self.pose_callback_ = self.create_subscription(PoseStamped, '/gt_pose', self.pose_callback, 10)
+        self.do_traj_callback_ = self.create_subscription(Bool, '/do_traj', self.do_traj_callback, 10)
         self.path_pub_ = self.create_publisher(Path, "control_trajectory", latched_qos)
+        self.cmd_vel_callback_ = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.last_cmd_vel_time_ = None
+        self.nav2_timeout_ = Duration(seconds=1.0)
         self._action_server = ActionServer(
             self,
             ControlTrajectoryScenarioMsg,
@@ -174,10 +220,11 @@ class DataCollector(Node):
             max_iters=10000,
             u_max=u_max,
             s_max=np.array([]),
-            max_solve_secs=-1.0
+            max_solve_secs=90.0
         )
         self.trajectory_planner_ = \
             ControlTrajectoryPlanner(solver_params=self.sp_, env_params=self.ep_)
+        self.data_recorder_ = BagRecorder(self,per_topic_qos=per_topic_qos)
 
     def unused_execute_callback(self, oal_handle: ServerGoalHandle):
         # This will never be called if handle_accepted_callback takes over,
@@ -219,6 +266,8 @@ class DataCollector(Node):
         - publish feedback
         - eventually call succeed()/abort()/canceled() and return a Result
         """
+        self.busy_ = True
+        self.path_available_ = False
 
         goal: ControlTrajectoryScenarioMsg.Goal = goal_handle.request
         goal_id = goal_handle.goal_id
@@ -250,72 +299,33 @@ class DataCollector(Node):
 
         self.trajectory_planner_.reset_map(self.occ_map_)
         self.get_logger().info(f'Computing control trajectory for goal: {gug}')
-        ct = self.trajectory_planner_.trajectory(cts)
 
-        if not ct.conv:
+        self.ct_ = self.trajectory_planner_.trajectory(cts)
+
+        if not self.ct_.conv:
             goal_handle.abort()
             result = ControlTrajectoryScenarioMsg.Result()
             result.success = False
             result.message = 'Trajectory solver did not converge.'
             self.get_logger().info(f'Goal {gug} failed.')
+            self.busy_ = False
             return result
 
         # form and post the path
-        path = from_trajectory(ct, self.get_clock().now().to_msg())
-        self.get_logger().info("Publishing control_trajectory with %d points" % len(path.poses))
-        self.path_pub_.publish(path)
+        self.path_ = from_trajectory(self.ct_, self.get_clock().now().to_msg())
+        self.path_available_ = True
+        self.get_logger().info("Publishing control_trajectory with %d points" % len(self.path_.poses))
+        self.path_pub_.publish(self.path_)
 
         # save the trajectory diagnostic plot
         #self.trajectory_planner_.do_diagnostic_plot("/home/sjohnson/ugv_ws/ctp_diag.png", ct)
 
-        # none of the nav2 handshaking is working, but some bits of code are
-        # left in place for future cleanup (or my own follow-path node)
-        nav2_success = True
-        if not dryrun:
-            # reset monitor
-            # self.follow_path_monitor_.set_unknown()
-            # hand off path to nav2 for following
-            # note: we may want to use the async version here
-            nav2_goal = FollowPath.Goal()
-            nav2_goal.path = path
-            nav2_goal.controller_id = "FollowPath"
-            nav2_goal.goal_checker_id = "general_goal_checker"
-            nav2_goal_future = self.follow_path_client_.send_goal_async(nav2_goal)
-
-            # none of this nav2 goal synch/status check stuff works - presumably
-            # nav2 either has a bug, or the nav2 behavior tree is doing what
-            # we want in a different way
-
-            # let nav2 swallow before checking status
-            #time.sleep(2.0)
-
-            # while self.follow_path_monitor_.is_busy:
-            #     time.sleep(1.0)
-
-            # while not nav2_goal_future.done():
-            #     time.sleep(1.0)
-            #
-            # nav2_goal_handle = nav2_goal_future.result()
-            # if not nav2_goal_handle.accepted:
-            #     self.get_logger().info(f'Goal {gug} not accepted by nav2.')
-            #     nav2_success = False
-            # else:
-            #     nav2_result_future = nav2_goal_handle.get_result_async()
-            #     while not nav2_result_future.done():
-            #         time.sleep(1.0)
-
         # If we are here, "success"!
         goal_handle.succeed()
         result = ControlTrajectoryScenarioMsg.Result()
-        if nav2_success:
-            result.success = True
-            result.message = 'Trajectory planning completed and nav2 trajectory started (probably).'
-            self.get_logger().info(f'Goal {gug} succeeded')
-        else:
-            # not yet supported, since I can't seem to get any feedback from nav2
-            result.success = False
-            result.message = 'An error occurred in nav2.'
-            self.get_logger().info(f'Goal {gug} succeeded')
+        result.success = True
+        result.message = 'Trajectory planning completed - post True to /do_traj to execute.'
+        self.get_logger().info(f'Goal {gug} succeeded')
         self.busy_ = False
         return result
 
@@ -329,6 +339,62 @@ class DataCollector(Node):
     def pose_callback(self, pose: PoseStamped):
         self.pose_ = copy.deepcopy(pose)
 
+    def cmd_vel_callback(self, msg: Twist):
+        clock_now = self.get_clock().now()
+        self.last_cmd_vel_time_ = clock_now
+
+    def is_nav2_active(self) -> bool:
+        if self.last_cmd_vel_time_ is None:
+            return False
+        ros2_now = self.get_clock().now()
+        return (ros2_now - self.last_cmd_vel_time_) < self.nav2_timeout_
+
+    def do_traj_callback(self, do_it: Bool):
+        """if: we are not busy, and a computed trajectory is available, and not stale, do it."""
+        if self.busy_:
+            return
+        elif self.path_available_ and do_it.data == True:
+            # Offload to thread so we don't block the executor
+            thread = threading.Thread(target=self.execute_do_traj_callback, args=(), daemon=True)
+            thread.start()
+
+    def execute_do_traj_callback(self):
+        # create an output directory
+        run_time = time.strftime("%Y%m%d_%H%M%S")
+        # dc is data_collector - to distinguish from explore, etc
+        # btw, the bag file writer doesn't like it when I pre-create the bag
+        # directory, so I'll split output targets into two dirs.
+        bag_dir = os.path.join("trajectory_data_collector","dc_bag_" + run_time)
+        etc_dir = os.path.join("trajectory_data_collector","dc_etc_" + run_time)
+        os.makedirs(etc_dir)
+        # save the trajectory diagnostic plot
+        self.trajectory_planner_.do_diagnostic_plot(os.path.join(etc_dir,"diag_plot.png"), self.ct_)
+        # start the data recorder
+        self.busy_ = True
+        self.get_logger().info(f'Starting data recording.')
+        self.data_recorder_.start(bag_dir=bag_dir, topics=collection_topics)
+        nav2_goal = FollowPath.Goal()
+        nav2_goal.path = self.path_
+        nav2_goal.controller_id = "FollowPath"
+        nav2_goal.goal_checker_id = "general_goal_checker"
+        nav2_goal_future = self.follow_path_client_.send_goal_async(nav2_goal)
+        # none of the nav2 goal sync/status check stuff works - presumably
+        # nav2 either has a bug, or the nav2 behavior tree is doing what we want in
+        # a different way. See follow_path_monitor.py.
+        # mark our path as stale - let's assume the robot will at least change state
+        # when confronted with the follow path goal.
+        self.path_available_ = False
+
+        # have the data_recorder wait for nav2 path completion
+        # do an initial sleep to give nav2 a chance to get started
+        time.sleep(1.0)
+        while self.is_nav2_active():
+            self.get_logger().info(f'Waiting for nav2 path completion.')
+            time.sleep(1.0)
+        self.get_logger().info(f'nav2 seems to be done. Stopping data recorder.')
+        self.data_recorder_.stop()
+        self.get_logger().info(f'Data recording stopped: done!')
+        self.busy_ = False
 
 def main(args=None):
     rclpy.init(args=args)
@@ -337,7 +403,7 @@ def main(args=None):
     # Give everything a moment to initialize
     collector.get_logger().info("System initializing... will be ready for new goals in 5 seconds.")
     time.sleep(5)  # Give map, AMCL, Nav2 time to settle
-
+    collector.get_logger().info("Ready for goals.")
     try:
         rclpy.spin(collector)
     except KeyboardInterrupt:

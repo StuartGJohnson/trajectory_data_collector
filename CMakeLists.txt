@@ -33,9 +33,9 @@ install(
   USE_SOURCE_PERMISSIONS
 )
 
-ament_python_install_package(trajectory_utils
-  PACKAGE_DIR trajectory_utils
-)
+#ament_python_install_package(trajectory_utils
+#  PACKAGE_DIR trajectory_utils
+#)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
