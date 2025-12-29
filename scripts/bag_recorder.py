@@ -9,6 +9,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.serialization import serialize_message
 from rclpy.time import Time
+import time
 
 from rclpy.qos import (
     QoSProfile,
@@ -79,12 +80,50 @@ class BagRecorder:
         self._lock = threading.Lock()
         self._recording: bool = False
         self.logged_it_: bool = False
+        self.latched_topic_received = []
 
         self._topic_types: Dict[str, str] = {}
 
     @property
     def recording(self) -> bool:
         return self._recording
+
+    def launch_topic(self, topic, writer, topic_type_map, topic_index):
+        if topic not in topic_type_map:
+            raise RuntimeError(f"Topic '{topic}' not found in ROS graph")
+
+        type_str = topic_type_map[topic]
+        msg_type = get_message(type_str)
+
+        writer.create_topic(
+            rosbag2_py.TopicMetadata(
+                name=topic,
+                type=type_str,
+                serialization_format=self._serialization_format,
+                offered_qos_profiles="",
+            )
+        )
+
+        qos = self._per_topic_qos.get(topic, self._default_qos)
+
+        if qos.durability == QoSDurabilityPolicy.TRANSIENT_LOCAL:
+            sub = self._node.create_subscription(
+                msg_type,
+                topic,
+                self._make_latched_cb(topic, writer, topic_index),
+                qos,
+            )
+        else:
+            sub = self._node.create_subscription(
+                msg_type,
+                topic,
+                self._make_cb(topic, writer),
+                qos,
+            )
+        self._subs.append(sub)
+        self._topic_types[topic] = type_str
+
+        self._node.get_logger().info(f"Recording {topic} [{type_str}] QoS={self._qos_str(qos)}")
 
     def start(self, bag_dir: str, topics: Sequence[str]) -> None:
         self.logged_it_ = False
@@ -111,34 +150,37 @@ class BagRecorder:
         
         self._recording = True
 
+        # divvy up topics
+        latched_topics = []
+        unlatched_topics = []
         for topic in topics:
-            if topic not in topic_type_map:
-                raise RuntimeError(f"Topic '{topic}' not found in ROS graph")
-
-            type_str = topic_type_map[topic]
-            msg_type = get_message(type_str)
-
-            writer.create_topic(
-                rosbag2_py.TopicMetadata(
-                    name=topic,
-                    type=type_str,
-                    serialization_format=self._serialization_format,
-                    offered_qos_profiles="",
-                )
-            )
-
             qos = self._per_topic_qos.get(topic, self._default_qos)
+            if qos.durability == QoSDurabilityPolicy.TRANSIENT_LOCAL:
+                latched_topics.append(topic)
+            else:
+                unlatched_topics.append(topic)
 
-            sub = self._node.create_subscription(
-                msg_type,
-                topic,
-                self._make_cb(topic, writer),
-                qos,
-            )
-            self._subs.append(sub)
-            self._topic_types[topic] = type_str
+        self.latched_topic_received = [False] * len(latched_topics)
 
-            self._node.get_logger().info(f"Recording {topic} [{type_str}] QoS={self._qos_str(qos)}")
+        # launch latched topics
+        topic_ind = 0
+        for topic in latched_topics:
+            self.launch_topic(topic,writer, topic_type_map, topic_ind)
+            topic_ind += 1
+
+        # wait until all these have been serviced
+        timeout_count = 10
+        for i in range(timeout_count):
+            if all(self.latched_topic_received):
+                break
+            else:
+                time.sleep(1.0)
+        self._node.get_logger().info(f"All latched topics received.")
+
+        # launch unlatched topics
+        for topic in unlatched_topics:
+            self.launch_topic(topic,writer, topic_type_map, topic_ind)
+            topic_ind += 1
 
         self._node.get_logger().info(f"MCAP recording started: {bag_dir}")
 
@@ -161,15 +203,27 @@ class BagRecorder:
             # ROS time (sim time compatible)
             t_ns = self._node.get_clock().now().nanoseconds
             data = serialize_message(msg)
-            if topic == "/tf_static" and not self.logged_it_:
-                self._node.get_logger().info("received tf_static.")
-                self.logged_it_ = True
             with self._lock:
                 if not self._recording:
                     return
                 writer.write(topic, data, t_ns)
 
         return _cb
+
+    def _make_latched_cb(self, topic: str, writer,  topic_ind: int):
+        def _cbl(msg):
+            # ROS time (sim time compatible)
+            t_ns = self._node.get_clock().now().nanoseconds
+            data = serialize_message(msg)
+            with self._lock:
+                if not self._recording:
+                    return
+                if self.latched_topic_received[topic_ind]:
+                    return
+                writer.write(topic, data, t_ns)
+            self.latched_topic_received[topic_ind] = True
+
+        return _cbl
 
     def _get_topic_type_map(self) -> Dict[str, str]:
         out: Dict[str, str] = {}

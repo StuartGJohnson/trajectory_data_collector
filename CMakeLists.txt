@@ -25,6 +25,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES builtin_interfaces nav_msgs geometry_msgs
 )
 
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME})
 
 # Install scripts/etc
 install(

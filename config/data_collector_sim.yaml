@@ -1,0 +1,84 @@
+# --- topics / interfaces ---
+map_topic: "/octomap_grid"
+gt_topic: "/gt_pose"
+traj_topic: "/control_trajectory"
+do_traj_topic: "/do_traj"
+
+nav2_timeout: 1.0
+
+# --- bag recording selection ---
+collection_topics:
+  - "/cmd_vel"
+  - "/odom"
+  - "/tf"
+  - "/tf_static"
+  - "/joint_states"
+  - "/gt_pose"
+
+# QoS overrides only where needed; everything else can use node defaults
+per_topic_qos:
+  "/tf_static":
+    durability: "transient_local"
+    reliability: "reliable"
+    history: "keep_last"
+    depth: 1
+  "/tf":
+    durability: "volatile"
+    reliability: "reliable"
+    history: "keep_last"
+    depth: 200
+  "/odom":
+    durability: "volatile"
+    reliability: "reliable"
+    history: "keep_last"
+    depth: 50
+  "/joint_states":
+    durability: "volatile"
+    reliability: "reliable"
+    history: "keep_last"
+    depth: 50
+  "/gt_pose":
+    durability: "volatile"
+    reliability: "reliable"
+    history: "keep_last"
+    depth: 50
+  "/cmd_vel":
+    durability: "volatile"
+    reliability: "best_effort"
+    history: "keep_last"
+    depth: 50
+
+# --- env params ---
+env_params:
+  robot_radius: 0.22
+  obstacle_radius: 0.15
+  max_robot_v: 0.6
+  max_robot_omega: 1.5
+  occupied_thresh: 65
+
+# --- solver params ---
+solver_params:
+  dt: 0.2
+
+  # Matrices: store as flat list + shape (robust, easy to validate)
+  P:
+    shape: [3, 3]
+    data: [1.0, 0.0, 0.0,
+           0.0, 1.0, 0.0,
+           0.0, 0.0,  1.0]
+  Q:
+    shape: [3, 3]
+    data: [1.0, 0.0, 0.0,
+           0.0, 1.0, 0.0,
+           0.0, 0.0, 1.0]
+  R:
+    shape: [2, 2]
+    data: [1.0, 0.0,
+           0.0, 1.0]
+
+  rho: 0.02
+  rho_u: 0.02
+  eps: 1.0e-3
+  cvxpy_eps: 1.0e-3
+  max_iters: 10000
+  max_solve_secs: 90.0

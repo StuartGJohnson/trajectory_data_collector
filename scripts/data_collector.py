@@ -42,11 +42,14 @@ from trajectory_data_collector.action import ControlTrajectoryScenarioMsg
 from follow_path_monitor import FollowPathMonitor
 import threading
 import time
-from typing import Tuple
+from typing import Any, Dict, List, Tuple
 from builtin_interfaces.msg import Time
 import uuid
 from bag_recorder import BagRecorder, qos_state, qos_sensor, qos_latched
 import os
+from pathlib import Path as PPath
+from ament_index_python.packages import get_package_share_directory
+import argparse
 
 def uuid_to_string(uuid_msg) -> str:
     return str(uuid.UUID(bytes=bytes(uuid_msg.uuid)))
@@ -151,6 +154,89 @@ per_topic_qos = {
     "/cmd_vel": qos_sensor(depth=50),
 }
 
+def parse_args():
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to YAML config file (absolute or relative)"
+    )
+    return parser.parse_known_args()
+
+def resolve_config_path(path: str) -> PPath:
+    p = PPath(path)
+
+    if p.is_absolute():
+        resolved = p
+    else:
+        cwd_candidate = (PPath.cwd() / p).resolve()
+        if cwd_candidate.exists():
+            resolved = cwd_candidate
+        else:
+            # try package share/config
+            pkg_share = PPath(get_package_share_directory("trajectory_data_collector"))
+            pkg_candidate = (pkg_share / "config" / p).resolve()
+            if pkg_candidate.exists():
+                resolved = pkg_candidate
+            else:
+                raise FileNotFoundError(
+                    f"Config not found as absolute, cwd-relative, or package config: {path}"
+                )
+
+    return resolved
+
+
+from rclpy.qos import (
+    QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy, QoSDurabilityPolicy
+)
+
+_HISTORY = {
+    "keep_last": QoSHistoryPolicy.KEEP_LAST,
+    "keep_all": QoSHistoryPolicy.KEEP_ALL,
+}
+_RELIABILITY = {
+    "reliable": QoSReliabilityPolicy.RELIABLE,
+    "best_effort": QoSReliabilityPolicy.BEST_EFFORT,
+}
+_DURABILITY = {
+    "volatile": QoSDurabilityPolicy.VOLATILE,
+    "transient_local": QoSDurabilityPolicy.TRANSIENT_LOCAL,
+}
+
+def qos_from_dict(d: dict) -> QoSProfile:
+    history = _HISTORY.get(str(d.get("history", "keep_last")).lower(), QoSHistoryPolicy.KEEP_LAST)
+    reliability = _RELIABILITY.get(str(d.get("reliability", "best_effort")).lower(), QoSReliabilityPolicy.BEST_EFFORT)
+    durability = _DURABILITY.get(str(d.get("durability", "volatile")).lower(), QoSDurabilityPolicy.VOLATILE)
+    depth = int(d.get("depth", 10))
+
+    return QoSProfile(
+        history=history,
+        depth=depth,
+        reliability=reliability,
+        durability=durability,
+    )
+
+def _mat_from_param(obj: Dict[str, Any], name: str) -> np.ndarray:
+    """
+    obj = {"shape": [r,c], "data": [ ... ]}
+    """
+    if not isinstance(obj, dict) or "shape" not in obj or "data" not in obj:
+        raise ValueError(f"{name} must be a dict with keys shape and data")
+    shape = tuple(int(x) for x in obj["shape"])
+    data = [float(x) for x in obj["data"]]
+    arr = np.array(data, dtype=float)
+    if arr.size != shape[0] * shape[1]:
+        raise ValueError(f"{name}.data has {arr.size} elems but shape implies {shape[0]*shape[1]}")
+    return arr.reshape(shape)
+
+def _vec_from_param(lst: Any, name: str, n: int) -> np.ndarray:
+    if not isinstance(lst, list):
+        raise ValueError(f"{name} must be a list")
+    if len(lst) != n:
+        raise ValueError(f"{name} must have length {n}, got {len(lst)}")
+    return np.array([float(x) for x in lst], dtype=float)
+
 class DataCollector(Node):
     busy_: bool
     request_map_update_: bool
@@ -169,9 +255,14 @@ class DataCollector(Node):
     last_cmd_vel_time_: Time | None
     nav2_timeout_: Duration
     data_recorder_: BagRecorder
+    topics_: List[str]
+    per_topic_qos: Dict
 
-    def __init__(self):
+    def __init__(self, cfg: Dict):
         super().__init__('DataCollector')
+        self.topics_ = list(cfg["collection_topics"])
+        qos_cfg = cfg["per_topic_qos"]
+        self.per_topic_qos_ = {t: qos_from_dict(cfg_item) for t, cfg_item in qos_cfg.items()}
         self.occ_map_ = None
         self.ct_ = None
         self.pose_ = None
@@ -180,13 +271,13 @@ class DataCollector(Node):
         self.busy_ = False
         self.path_ = None
         self.path_available_ = False
-        self.map_callback_ = self.create_subscription(OccupancyGrid, '/octomap_grid', self.map_callback, latched_qos)
-        self.pose_callback_ = self.create_subscription(PoseStamped, '/gt_pose', self.pose_callback, 10)
-        self.do_traj_callback_ = self.create_subscription(Bool, '/do_traj', self.do_traj_callback, 10)
-        self.path_pub_ = self.create_publisher(Path, "control_trajectory", latched_qos)
+        self.map_callback_ = self.create_subscription(OccupancyGrid, cfg['map_topic'], self.map_callback, latched_qos)
+        self.pose_callback_ = self.create_subscription(PoseStamped, cfg['gt_topic'], self.pose_callback, 10)
+        self.do_traj_callback_ = self.create_subscription(Bool, cfg['do_traj_topic'], self.do_traj_callback, 10)
+        self.path_pub_ = self.create_publisher(Path, cfg['traj_topic'], latched_qos)
         self.cmd_vel_callback_ = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.last_cmd_vel_time_ = None
-        self.nav2_timeout_ = Duration(seconds=1.0)
+        self.nav2_timeout_ = Duration(seconds=cfg['nav2_timeout'])
         self._action_server = ActionServer(
             self,
             ControlTrajectoryScenarioMsg,
@@ -201,30 +292,53 @@ class DataCollector(Node):
             "follow_path",
         )
         #self.follow_path_monitor_ = FollowPathMonitor(self, latched_qos)
+        # self.ep_ = RobotEnvParams(
+        #     robot_radius=0.2,
+        #     obstacle_radius=0.2,
+        #     max_robot_v=0.3,
+        #     max_robot_omega=1.0,
+        #     occupied_thresh=50)
+        env_cfg = cfg["env_params"]
         self.ep_ = RobotEnvParams(
-            robot_radius=0.2,
-            obstacle_radius=0.2,
-            max_robot_v=0.3,
-            max_robot_omega=1.0,
-            occupied_thresh=50)
+            robot_radius=float(env_cfg["robot_radius"]),
+            obstacle_radius=float(env_cfg["obstacle_radius"]),
+            max_robot_v=float(env_cfg["max_robot_v"]),
+            max_robot_omega=float(env_cfg["max_robot_omega"]),
+            occupied_thresh=int(env_cfg["occupied_thresh"]),
+        )
         u_max = np.array([self.ep_.max_robot_v, self.ep_.max_robot_omega])[None, :]
+        # self.sp_ = SolverParams(
+        #     dt=0.1,
+        #     P=1.0 * np.eye(3),
+        #     Q=np.eye(3),
+        #     R=np.eye(2),
+        #     rho=0.02,
+        #     rho_u=0.02,
+        #     eps=0.001,
+        #     cvxpy_eps=.001,
+        #     max_iters=10000,
+        #     u_max=u_max,
+        #     s_max=np.array([]),
+        #     max_solve_secs=90.0
+        # )
+        solver_cfg = cfg["solver_params"]
         self.sp_ = SolverParams(
-            dt=0.1,
-            P=1.0 * np.eye(3),
-            Q=np.eye(3),
-            R=np.eye(2),
-            rho=0.02,
-            rho_u=0.02,
-            eps=0.001,
-            cvxpy_eps=.001,
-            max_iters=10000,
+            dt=float(solver_cfg["dt"]),
+            P=_mat_from_param(solver_cfg["P"], "solver_params.P"),
+            Q=_mat_from_param(solver_cfg["Q"], "solver_params.Q"),
+            R=_mat_from_param(solver_cfg["R"], "solver_params.R"),
+            rho=float(solver_cfg["rho"]),
+            rho_u=float(solver_cfg["rho_u"]),
+            eps=float(solver_cfg["eps"]),
+            cvxpy_eps=float(solver_cfg["cvxpy_eps"]),
+            max_iters=int(solver_cfg["max_iters"]),
             u_max=u_max,
             s_max=np.array([]),
-            max_solve_secs=90.0
+            max_solve_secs=float(solver_cfg["max_solve_secs"]),
         )
         self.trajectory_planner_ = \
             ControlTrajectoryPlanner(solver_params=self.sp_, env_params=self.ep_)
-        self.data_recorder_ = BagRecorder(self,per_topic_qos=per_topic_qos)
+        self.data_recorder_ = BagRecorder(self,per_topic_qos=self.per_topic_qos_)
 
     def unused_execute_callback(self, oal_handle: ServerGoalHandle):
         # This will never be called if handle_accepted_callback takes over,
@@ -396,9 +510,15 @@ class DataCollector(Node):
         self.get_logger().info(f'Data recording stopped: done!')
         self.busy_ = False
 
-def main(args=None):
-    rclpy.init(args=args)
-    collector = DataCollector()
+def main():
+    args, _ = parse_args()
+    config_path = resolve_config_path(args.config)
+    import yaml
+    with open(config_path, "r") as f:
+        cfg: Dict = yaml.safe_load(f)
+
+    rclpy.init()
+    collector = DataCollector(cfg)
 
     # Give everything a moment to initialize
     collector.get_logger().info("System initializing... will be ready for new goals in 5 seconds.")
