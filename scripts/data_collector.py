@@ -126,33 +126,33 @@ latched_qos = QoSProfile(
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
 )
 
-collection_topics = [
-    "/cmd_vel",
-    "/odom",
-    "/tf",
-    "/tf_static",
-    "/joint_states",
-    "/gt_pose"
-]
+# collection_topics = [
+#     "/cmd_vel",
+#     "/odom",
+#     "/tf",
+#     "/tf_static",
+#     "/joint_states",
+#     "/gt_pose"
+# ]
 
-per_topic_qos = {
-    "/tf_static": qos_latched(depth=1),   # important: late-joiners get the static transforms
-    "/tf": qos_state(depth=200),          # tf is bursty; deeper queue helps
-    "/odom": qos_state(depth=50),
-    "/ground_truth": qos_state(depth=50),
-    "/joint_states": qos_state(depth=50),
-    "/gt_pose": qos_state(depth=50),
-
-    # Sensors often publish BEST_EFFORT; match that to avoid incompatibility
-    "/imu/data": qos_sensor(depth=200),
-    "/imu/mag": qos_sensor(depth=200),
-
-    # Depending on your publisher, this might be BEST_EFFORT; start sensor-ish
-    "/lidar_odom": qos_sensor(depth=100),
-
-    # cmd_vel is Twist (no header) and can be best-effort; start sensor-ish
-    "/cmd_vel": qos_sensor(depth=50),
-}
+# per_topic_qos = {
+#     "/tf_static": qos_latched(depth=1),   # important: late-joiners get the static transforms
+#     "/tf": qos_state(depth=200),          # tf is bursty; deeper queue helps
+#     "/odom": qos_state(depth=50),
+#     "/ground_truth": qos_state(depth=50),
+#     "/joint_states": qos_state(depth=50),
+#     "/gt_pose": qos_state(depth=50),
+#
+#     # Sensors often publish BEST_EFFORT; match that to avoid incompatibility
+#     "/imu/data": qos_sensor(depth=200),
+#     "/imu/mag": qos_sensor(depth=200),
+#
+#     # Depending on your publisher, this might be BEST_EFFORT; start sensor-ish
+#     "/lidar_odom": qos_sensor(depth=100),
+#
+#     # cmd_vel is Twist (no header) and can be best-effort; start sensor-ish
+#     "/cmd_vel": qos_sensor(depth=50),
+# }
 
 def parse_args():
     parser = argparse.ArgumentParser(add_help=True)
@@ -257,9 +257,11 @@ class DataCollector(Node):
     data_recorder_: BagRecorder
     topics_: List[str]
     per_topic_qos: Dict
+    output_dir_: str
 
     def __init__(self, cfg: Dict):
         super().__init__('DataCollector')
+        self.output_dir_ = cfg["output_dir"]
         self.topics_ = list(cfg["collection_topics"])
         qos_cfg = cfg["per_topic_qos"]
         self.per_topic_qos_ = {t: qos_from_dict(cfg_item) for t, cfg_item in qos_cfg.items()}
@@ -479,15 +481,15 @@ class DataCollector(Node):
         # dc is data_collector - to distinguish from explore, etc
         # btw, the bag file writer doesn't like it when I pre-create the bag
         # directory, so I'll split output targets into two dirs.
-        bag_dir = os.path.join("trajectory_data_collector","dc_bag_" + run_time)
-        etc_dir = os.path.join("trajectory_data_collector","dc_etc_" + run_time)
+        bag_dir = os.path.join(self.output_dir_,"dc_bag_" + run_time)
+        etc_dir = os.path.join(self.output_dir_,"dc_etc_" + run_time)
         os.makedirs(etc_dir)
         # save the trajectory diagnostic plot
         self.trajectory_planner_.do_diagnostic_plot(os.path.join(etc_dir,"diag_plot.png"), self.ct_)
         # start the data recorder
         self.busy_ = True
         self.get_logger().info(f'Starting data recording.')
-        self.data_recorder_.start(bag_dir=bag_dir, topics=collection_topics)
+        self.data_recorder_.start(bag_dir=bag_dir, topics=self.topics_)
         nav2_goal = FollowPath.Goal()
         nav2_goal.path = self.path_
         nav2_goal.controller_id = "FollowPath"
