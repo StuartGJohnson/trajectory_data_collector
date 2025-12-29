@@ -82,3 +82,4 @@ solver_params:
   cvxpy_eps: 1.0e-3
   max_iters: 10000
   max_solve_secs: 90.0
+  solver_type: "OSQP"

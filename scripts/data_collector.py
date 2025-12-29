@@ -335,6 +335,7 @@ class DataCollector(Node):
             u_max=u_max,
             s_max=np.array([]),
             max_solve_secs=float(solver_cfg["max_solve_secs"]),
+            solver_type=solver_cfg["solver_type"]
         )
         self.trajectory_planner_ = \
             ControlTrajectoryPlanner(solver_params=self.sp_, env_params=self.ep_)
