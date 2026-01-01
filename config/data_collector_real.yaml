@@ -3,7 +3,7 @@ map_topic: "/octomap_grid"
 gt_topic: "/object_1"
 traj_topic: "/control_trajectory"
 do_traj_topic: "/do_traj"
-output_dir: "/mnt/nvme/trajectory_data_collector"
+output_dir: "/home/sjohnson/ugv/trajectory_data_collector"
 
 nav2_timeout: 1.0
 
@@ -11,9 +11,13 @@ nav2_timeout: 1.0
 collection_topics:
   - "/cmd_vel"
   - "/odom"
+  - "/odom/odom_raw"
+  - "/odom_enc"
+  - "/odom_rf2o"
+  - "/imu/data_raw"
+  - "/imu/mag"
   - "/tf"
   - "/tf_static"
-  - "/joint_states"
   - "/object_1"
 
 # QoS overrides only where needed; everything else can use node defaults
@@ -29,11 +33,6 @@ per_topic_qos:
     history: "keep_last"
     depth: 200
   "/odom":
-    durability: "volatile"
-    reliability: "reliable"
-    history: "keep_last"
-    depth: 50
-  "/joint_states":
     durability: "volatile"
     reliability: "reliable"
     history: "keep_last"
@@ -64,6 +63,11 @@ per_topic_qos:
     history: "keep_last"
     depth: 50
   "/odom_enc":
+    durability: "volatile"
+    reliability: "best_effort"
+    history: "keep_last"
+    depth: 50
+  "/odom_rf2o":
     durability: "volatile"
     reliability: "best_effort"
     history: "keep_last"
