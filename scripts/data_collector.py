@@ -329,6 +329,7 @@ class DataCollector(Node):
             P=_mat_from_param(solver_cfg["P"], "solver_params.P"),
             Q=_mat_from_param(solver_cfg["Q"], "solver_params.Q"),
             R=_mat_from_param(solver_cfg["R"], "solver_params.R"),
+            Rd=np.array([]),
             rho=float(solver_cfg["rho"]),
             rho_u=float(solver_cfg["rho_u"]),
             eps=float(solver_cfg["eps"]),

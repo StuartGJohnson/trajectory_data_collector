@@ -66,7 +66,7 @@ class ControlTrajectoryPlanner:
         self.solver.initialize_trajectory()
         s, u, J, conv, status, _, _ = self.solver.solve()
         # update with a rollout
-        s,u = self.solver.rollout(s, u)
+        s,u = self.solver.get_ode().rollout(s, u, N)
         return ControlTrajectory(sc=sc,
                           s=s,
                           u=u,
