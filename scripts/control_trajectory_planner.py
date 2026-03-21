@@ -1,11 +1,10 @@
 """ A functional wrapper of the SCPSolver subclass
 DiffDriveSolver which knows about ROS2. """
 
-from torch_traj_utils.diff_drive_solver import DiffDriveSolver, SDF, SolverParams
+from torch_traj_utils.diff_drive_solver_cas import DiffDriveSolverCas, CasadiSolverParams
 from dataclasses import dataclass
 import numpy as np
-from torch_traj_utils.scp_solver import SolverParams
-from torch_traj_utils.scalar_field_interpolator import OccupancyMap, SDF, ScalarFieldInterpolator
+from torch_traj_utils.scalar_field_interpolator import OccupancyMap, SDF
 import torch
 import matplotlib.pyplot as plt
 from torch.func import vmap
@@ -41,15 +40,15 @@ class RobotEnvParams:
 
 class ControlTrajectoryPlanner:
     # the core SCP solver for computing control trajectories
-    sp: SolverParams
+    sp: CasadiSolverParams
     ep: RobotEnvParams
-    solver: DiffDriveSolver
+    solver: DiffDriveSolverCas
     occ: OccupancyMap | None
 
-    def __init__(self, solver_params: SolverParams, env_params: RobotEnvParams):
+    def __init__(self, solver_params: CasadiSolverParams, env_params: RobotEnvParams):
         self.sp = solver_params
         self.ep = env_params
-        self.solver = DiffDriveSolver(sp=solver_params)
+        self.solver = DiffDriveSolverCas(sp=solver_params)
         self.occ = None
         self.sdf = None
 
