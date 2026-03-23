@@ -11,6 +11,7 @@ nav2_timeout: 1.0
 collection_topics:
   - "/cmd_vel"
   - "/odom"
+  - "/odom_ugv"
   - "/odom/odom_raw"
   - "/odom_enc"
   - "/odom_rf2o"
@@ -68,6 +69,11 @@ per_topic_qos:
     history: "keep_last"
     depth: 50
   "/odom_rf2o":
+    durability: "volatile"
+    reliability: "best_effort"
+    history: "keep_last"
+    depth: 50
+  "/odom_ugv":
     durability: "volatile"
     reliability: "best_effort"
     history: "keep_last"
