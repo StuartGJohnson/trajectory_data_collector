@@ -36,7 +36,7 @@ import logging
 import numpy as np
 import copy
 from torch_traj_utils.scalar_field_interpolator import OccupancyMap
-from torch_traj_utils.diff_drive_solver import SolverParams
+from torch_traj_utils.diff_drive_solver_cas import CasadiSolverParams
 from control_trajectory_planner import ControlTrajectoryScenario, ControlTrajectoryPlanner, RobotEnvParams, ControlTrajectory
 from trajectory_data_collector.action import ControlTrajectoryScenarioMsg
 from follow_path_monitor import FollowPathMonitor
@@ -249,7 +249,7 @@ class DataCollector(Node):
     trajectory_planner_: ControlTrajectoryPlanner
     ct_: ControlTrajectory | None
     ep_: RobotEnvParams
-    sp_: SolverParams
+    sp_: CasadiSolverParams
     path_: Path | None
     path_available_: bool
     last_cmd_vel_time_: Time | None
@@ -324,21 +324,27 @@ class DataCollector(Node):
         #     max_solve_secs=90.0
         # )
         solver_cfg = cfg["solver_params"]
-        self.sp_ = SolverParams(
+        self.sp_ = CasadiSolverParams(
             dt=float(solver_cfg["dt"]),
-            P=_mat_from_param(solver_cfg["P"], "solver_params.P"),
-            Q=_mat_from_param(solver_cfg["Q"], "solver_params.Q"),
-            R=_mat_from_param(solver_cfg["R"], "solver_params.R"),
-            Rd=np.array([]),
-            rho=float(solver_cfg["rho"]),
-            rho_u=float(solver_cfg["rho_u"]),
-            eps=float(solver_cfg["eps"]),
-            cvxpy_eps=float(solver_cfg["cvxpy_eps"]),
-            max_iters=int(solver_cfg["max_iters"]),
+            #P=_mat_from_param(solver_cfg["P"], "solver_params.P"),
+            #Q=_mat_from_param(solver_cfg["Q"], "solver_params.Q"),
+            #R=_mat_from_param(solver_cfg["R"], "solver_params.R"),
+            P=0.0 * np.eye(3),
+            Q=np.eye(3),
+            R=np.eye(2),
+            Rd=0.0 * np.eye(2),
             u_max=u_max,
             s_max=np.array([]),
-            max_solve_secs=float(solver_cfg["max_solve_secs"]),
-            solver_type=solver_cfg["solver_type"]
+            optimize_time = False,
+            dt_min = 0.001,
+            dt_max = 0.02,
+            time_weight = 0.0,
+            max_solve_secs = float(solver_cfg["max_solve_secs"]),
+            ipopt_max_iter = int(solver_cfg["ipopt_max_iter"]),
+            ipopt_tol = float(solver_cfg["ipopt_tol"]),
+            ipopt_print_level = int(solver_cfg["ipopt_print_level"]),
+            ipopt_sb = solver_cfg["ipopt_sb"],
+            print_time = False
         )
         self.trajectory_planner_ = \
             ControlTrajectoryPlanner(solver_params=self.sp_, env_params=self.ep_)
@@ -408,10 +414,16 @@ class DataCollector(Node):
         # get roll, pitch, yaw
         euler_angles = quaternion_to_euler(self.pose_.pose.orientation)
 
+        # s0 = np.array(
+        #     [self.pose_.pose.position.x,
+        #      self.pose_.pose.position.y,
+        #      euler_angles[2]])
+
+        # temp hack when not in gt mode
         s0 = np.array(
-            [self.pose_.pose.position.x,
-             self.pose_.pose.position.y,
-             euler_angles[2]])
+            [0.0,
+             0.0,
+             0.0])
 
         cts.s0 = s0
 

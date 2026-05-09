@@ -11,9 +11,8 @@ nav2_timeout: 1.0
 collection_topics:
   - "/cmd_vel"
   - "/odom"
-  - "/odom_ugv"
+  #- "/odom_ugv"
   - "/odom/odom_raw"
-  - "/odom_enc"
   - "/odom_rf2o"
   - "/imu/data_raw"
   - "/imu/mag"
@@ -63,11 +62,6 @@ per_topic_qos:
     reliability: "best_effort"
     history: "keep_last"
     depth: 50
-  "/odom_enc":
-    durability: "volatile"
-    reliability: "best_effort"
-    history: "keep_last"
-    depth: 50
   "/odom_rf2o":
     durability: "volatile"
     reliability: "best_effort"
@@ -89,14 +83,14 @@ env_params:
 
 # --- solver params ---
 solver_params:
-  dt: 0.2
+  dt: 0.1
 
   # Matrices: store as flat list + shape (robust, easy to validate)
   P:
     shape: [3, 3]
-    data: [1.0, 0.0, 0.0,
-           0.0, 1.0, 0.0,
-           0.0, 0.0,  1.0]
+    data: [0.0, 0.0, 0.0,
+           0.0, 0.0, 0.0,
+           0.0, 0.0,  0.0]
   Q:
     shape: [3, 3]
     data: [1.0, 0.0, 0.0,
@@ -107,10 +101,9 @@ solver_params:
     data: [1.0, 0.0,
            0.0, 1.0]
 
-  rho: 0.02
-  rho_u: 0.02
-  eps: 1.0e-3
-  cvxpy_eps: 1.0e-3
-  max_iters: 10000
-  max_solve_secs: 90.0
-  solver_type: "OSQP"
+  max_solve_secs: -1.0
+  ipopt_max_iter: 2000
+  ipopt_tol: 1e-2
+  ipopt_print_level: 0
+  ipopt_sb: "yes"
+

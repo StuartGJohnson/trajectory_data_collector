@@ -86,13 +86,9 @@ class ControlTrajectoryPlanner:
 
         s_pts = np.stack([xx.ravel(), yy.ravel()], axis=1)
         u_pts = np.zeros(s_pts.shape)
-        S = torch.from_numpy(s_pts)
-        U = torch.from_numpy(u_pts)
-
-        c = vmap(self.solver.sdf_interpolator.interpolator, in_dims=(0, 0))(S, U)  # (T,)
-        c_np = c.detach().cpu().numpy()
-        c_np = np.reshape(c_np, (len(y), len(x)))
-        plt.figure()
+        c = self.solver.sdf_interpolator.interpolator(s_pts, u_pts)
+        c_np = np.reshape(c, (len(y), len(x)))
+        #plt.figure()
         plt.imshow(c_np,
                    origin='lower',
                    extent=[x.min(), x.max(), y.min(), y.max()],  # map array to coordinate bounds
